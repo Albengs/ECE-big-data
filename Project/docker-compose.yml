@@ -1,0 +1,74 @@
+services:
+  spark-notebook:
+    image: quay.io/jupyter/pyspark-notebook:spark-3.5.3
+    container_name: imdb-spark
+    user: root
+    environment:
+      NB_UID: ${NB_UID:-1000}
+      NB_GID: ${NB_GID:-100}
+      CHOWN_EXTRA: /home/jovyan/spark-data
+      CHOWN_EXTRA_OPTS: "-R"
+      SPARK_DATA_DIR: /home/jovyan/spark-data
+      MAX_ROWS: ${MAX_ROWS:-400}
+      ENRICH_FILM_LIMIT: ${ENRICH_FILM_LIMIT:-0}
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: wikipedia.recentchange
+    ports:
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:4040:4040"
+      - "127.0.0.1:4041:4041"
+    volumes:
+      - .:/home/jovyan/work
+      - spark-data:/home/jovyan/spark-data
+    working_dir: /home/jovyan/work
+    command: start-notebook.py --IdentityProvider.token='' --ServerApp.root_dir=/home/jovyan/work
+
+  # Streaming services: started only with `docker compose --profile streaming up -d`.
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: imdb-kafka
+    profiles: ["streaming"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  wiki-producer:
+    image: quay.io/jupyter/pyspark-notebook:spark-3.5.3
+    container_name: imdb-wiki-producer
+    profiles: ["streaming"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: wikipedia.recentchange
+    volumes:
+      - .:/home/jovyan/work:ro
+    working_dir: /home/jovyan/work
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    command: sh -c "pip install --quiet confluent-kafka==2.6.1 && python -u wiki_producer.py"
+
+volumes:
+  spark-data:
+  kafka-data:
